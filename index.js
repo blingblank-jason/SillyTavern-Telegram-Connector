@@ -655,27 +655,39 @@ function buildCurrentStatusText(config, context) {
 }
 
 async function sendRecentChats(chatId, context, limit = 5) {
-    const allCharacters = (context.characters || [])
+    const cappedLimit = Math.max(1, Math.min(limit, 10));
+    const candidates = (context.characters || [])
         .map((char, index) => ({ char, index }))
-        .filter(item => item.index > 0 && item.char);
+        .filter(item => item.index > 0 && item.char)
+        .sort((a, b) => String(b.char.chat || '').localeCompare(String(a.char.chat || '')))
+        .slice(0, Math.max(cappedLimit * 3, cappedLimit));
+
     const rows = [];
-    for (const item of allCharacters) {
+    for (const item of candidates) {
         try {
             const chats = await getPastCharacterChats(item.index);
             if (chats.length > 0) {
+                const activeChatName = item.char.chat ? String(item.char.chat).replace('.jsonl', '') : null;
+                const activeChat = activeChatName
+                    ? chats.find(chat => chat.file_name.replace('.jsonl', '') === activeChatName)
+                    : null;
+                const chat = activeChat || chats[0];
                 rows.push({
                     characterId: item.index,
                     characterName: item.char.name || `角色${item.index}`,
-                    chat: chats[0],
-                    chatName: chats[0].file_name.replace('.jsonl', ''),
+                    chat,
+                    chatName: chat.file_name.replace('.jsonl', ''),
+                    sortKey: item.char.chat || chat.file_name || '',
                 });
             }
         } catch (error) {
             console.warn('[Telegram Bridge] recent chat scan failed', item.char?.name, error);
         }
+        if (rows.length >= cappedLimit) break;
     }
-    rows.sort((a, b) => String(b.chat.file_name || '').localeCompare(String(a.chat.file_name || '')));
-    const recent = rows.slice(0, Math.max(1, Math.min(limit, 10)));
+
+    rows.sort((a, b) => String(b.sortKey || '').localeCompare(String(a.sortKey || '')));
+    const recent = rows.slice(0, cappedLimit);
     if (!recent.length) {
         sendBridgeReply(chatId, '没有找到最近聊天。');
         return;
