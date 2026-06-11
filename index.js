@@ -19,6 +19,7 @@ import {
     doNewChat,
     selectCharacterById,
     openCharacterChat,
+    getCurrentChatDetails,
     Generate,
     setExternalAbortController,
     getRequestHeaders,
@@ -51,6 +52,8 @@ let isStreamingMode = false;
 
 // 添加一个全局变量来跟踪当前是否正在生成回复
 let isGenerating = false;
+let currentAbortController = null;
+let generationStopRequested = false;
 
 // 心跳超时检测相关变量
 let heartbeatTimeoutTimer = null;
@@ -609,6 +612,114 @@ async function switchPresetByNameOrIndex(arg) {
     return preset;
 }
 
+function getCurrentCharacterLabel(context) {
+    if (context?.characterId !== undefined && context?.characters?.[context.characterId]) {
+        return context.characters[context.characterId].name || '(未命名角色)';
+    }
+    try {
+        const details = getCurrentChatDetails?.();
+        if (details?.characterName) return details.characterName;
+    } catch (_) {}
+    return '(未选择)';
+}
+
+function getCurrentChatLabel() {
+    try {
+        const details = getCurrentChatDetails?.();
+        return details?.sessionName || '(未打开聊天)';
+    } catch (_) {
+        return '(未知)';
+    }
+}
+
+function buildCurrentStatusText(config, context) {
+    const currentProvider = getProviderList(config).find(p => p.current);
+    const currentProfile = Object.entries(config.profiles || {}).find(([, profile]) => {
+        const sourceMatches = !profile.source || profile.source === oai_settings.chat_completion_source;
+        const model = profile.modelAlias ? resolveModelArg(profile.modelAlias, config) : profile.model ? { model: profile.model } : null;
+        const modelMatches = !model?.model || model.model === getCurrentModelId();
+        const presetMatches = !profile.preset || profile.preset === oai_settings.preset_settings_openai;
+        return sourceMatches && modelMatches && presetMatches;
+    });
+    return [
+        '📍 当前会话状态', '',
+        `角色：${getCurrentCharacterLabel(context)}`,
+        `聊天：${getCurrentChatLabel()}`,
+        `Provider：${currentProvider ? `${currentProvider.label} (${currentProvider.id})` : oai_settings.chat_completion_source}`,
+        `模型：${getCurrentModelId() || '(未设置)'}`,
+        `预设：${oai_settings.preset_settings_openai || '(未设置)'}`,
+        `Profile：${currentProfile ? `${currentProfile[1].label || currentProfile[0]} (${currentProfile[0]})` : '(未匹配)'}`,
+        `生成状态：${isGenerating ? '生成中' : '空闲'}`,
+        `Bridge：${ws && ws.readyState === WebSocket.OPEN ? '已连接' : '未连接'}`,
+    ].join('\n');
+}
+
+async function sendRecentChats(chatId, context, limit = 5) {
+    const allCharacters = (context.characters || [])
+        .map((char, index) => ({ char, index }))
+        .filter(item => item.index > 0 && item.char);
+    const rows = [];
+    for (const item of allCharacters) {
+        try {
+            const chats = await getPastCharacterChats(item.index);
+            if (chats.length > 0) {
+                rows.push({
+                    characterId: item.index,
+                    characterName: item.char.name || `角色${item.index}`,
+                    chat: chats[0],
+                    chatName: chats[0].file_name.replace('.jsonl', ''),
+                });
+            }
+        } catch (error) {
+            console.warn('[Telegram Bridge] recent chat scan failed', item.char?.name, error);
+        }
+    }
+    rows.sort((a, b) => String(b.chat.file_name || '').localeCompare(String(a.chat.file_name || '')));
+    const recent = rows.slice(0, Math.max(1, Math.min(limit, 10)));
+    if (!recent.length) {
+        sendBridgeReply(chatId, '没有找到最近聊天。');
+        return;
+    }
+    const keyboard = recent.map((item, index) => [{
+        text: `${index + 1}. ${item.characterName} / ${item.chatName}`.slice(0, 60),
+        callback_data: `cmd_recent_${item.characterId}`,
+    }]);
+    const lines = recent.map((item, index) => `${index + 1}. ${item.characterName}\n   ${item.chatName}`).join('\n');
+    sendBridgeReply(chatId, `🕘 最近聊天（最近 ${recent.length} 个角色）\n\n${lines}\n\n点击按钮可直接切换角色并打开对应聊天。`, {
+        inline_keyboard: keyboard,
+    });
+}
+
+async function openRecentChat(chatId, context, characterId) {
+    const chats = await getPastCharacterChats(characterId);
+    if (!chats.length) {
+        sendBridgeReply(chatId, '该角色没有聊天记录。');
+        return;
+    }
+    const target = chats[0];
+    const chatName = target.file_name.replace('.jsonl', '');
+    await selectCharacterById(characterId);
+    await openCharacterChat(chatName);
+    const characterName = context.characters?.[characterId]?.name || `角色${characterId}`;
+    sendBridgeReply(chatId, `已切换到最近聊天：\n角色：${characterName}\n聊天：${chatName}`);
+}
+
+function stopCurrentGeneration(chatId) {
+    if (!isGenerating || !currentAbortController) {
+        sendBridgeReply(chatId, '当前没有正在生成的回复。');
+        return true;
+    }
+    try {
+        generationStopRequested = true;
+        currentAbortController.abort();
+        sendBridgeReply(chatId, '已请求停止当前生成。');
+    } catch (error) {
+        console.error('[Telegram Bridge] stop generation failed', error);
+        sendBridgeReply(chatId, `停止生成失败：${error.message || error}`);
+    }
+    return true;
+}
+
 function buildStatusText(config) {
     const enabledModels = getEnabledModelEntries(config).map(([alias, m]) => `${alias}: ${m.label || m.model} (${m.model})`);
     const profiles = Object.entries(config.profiles || {}).map(([name, p]) => `${name}: ${p.label || name} / model=${p.modelAlias || p.model || '-'} / preset=${p.preset || '-'}`);
@@ -659,7 +770,35 @@ async function handleBridgeControlCommand(data, context) {
         return true;
     }
 
-    if (isGenerating && !['models', 'presets', 'profiles', 'providers', 'provider_models', 'provider-models', 'bridge_status'].includes(command)) {
+    if (command === 'stop') {
+        return stopCurrentGeneration(data.chatId);
+    }
+
+    if (command === 'current' || command === 'session') {
+        const keyboard = [
+            [{ text: '📋 切换角色', callback_data: 'cmd_listchars' }, { text: '💬 切换聊天', callback_data: 'cmd_listchats' }],
+            [{ text: '🕘 最近聊天', callback_data: 'cmd_recent' }, { text: '🆕 新建聊天', callback_data: 'cmd_new' }],
+            [{ text: '🤖 模型', callback_data: 'cmd_models' }, { text: '🎛️ 预设', callback_data: 'cmd_presets' }],
+            [{ text: '🔌 Provider', callback_data: 'cmd_providers' }, { text: '⚡ Profile', callback_data: 'cmd_profiles' }],
+        ];
+        if (isGenerating) keyboard.unshift([{ text: '⏹ 停止生成', callback_data: 'cmd_stop' }]);
+        sendBridgeReply(data.chatId, buildCurrentStatusText(config, context), { inline_keyboard: keyboard });
+        return true;
+    }
+
+    if (command === 'recent') {
+        const limit = args[0] && /^\d+$/.test(String(args[0])) ? Number(args[0]) : 5;
+        await sendRecentChats(data.chatId, context, limit);
+        return true;
+    }
+
+    if (/^recent_\d+$/.test(command)) {
+        const [, characterId] = command.match(/^recent_(\d+)$/);
+        await openRecentChat(data.chatId, context, Number(characterId));
+        return true;
+    }
+
+    if (isGenerating && !['models', 'presets', 'profiles', 'providers', 'provider_models', 'provider-models', 'bridge_status', 'current', 'session', 'recent', 'stop'].includes(command)) {
         sendBridgeReply(data.chatId, '当前正在生成回复，请生成完成后再切换模型、预设或Profile。');
         return true;
     }
@@ -887,13 +1026,15 @@ function connect() {
                     eventSource.removeListener(event_types.STREAM_TOKEN_RECEIVED, streamCallback);
                     if (ws && ws.readyState === WebSocket.OPEN && isStreamingMode) {
                         // 仅在没有错误且确实处于流式模式时发送stream_end
-                        if (!data.error) {
+                        if (!data.error && !generationStopRequested) {
                             ws.send(JSON.stringify({ type: 'stream_end', chatId: data.chatId }));
                         }
                     }
                     // 注意：不在这里重置isStreamingMode，让handleFinalMessage函数来处理
                     // 重置生成状态标志
                     isGenerating = false;
+                    currentAbortController = null;
+                    generationStopRequested = false;
                 };
 
                 // 5. 监听生成结束事件，确保无论成功与否都执行清理
@@ -905,9 +1046,24 @@ function connect() {
                 // 6. 触发SillyTavern的生成流程，并用try...catch包裹
                 try {
                     const abortController = new AbortController();
+                    currentAbortController = abortController;
                     setExternalAbortController(abortController);
                     await Generate('normal', { signal: abortController.signal });
                 } catch (error) {
+                    if (abortController.signal.aborted || error?.name === 'AbortError') {
+                        console.log('[Telegram Bridge] 当前生成已被手动停止。');
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({
+                                type: 'ai_reply',
+                                chatId: data.chatId,
+                                text: '当前生成已停止。',
+                            }));
+                        }
+                        data.error = true;
+                        cleanup();
+                        return;
+                    }
+
                     console.error("[Telegram Bridge] Generate() 错误:", error);
 
                     // a. 从SillyTavern聊天记录中删除导致错误的用户消息

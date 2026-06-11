@@ -728,12 +728,13 @@ function isBridgeControlCommand(command) {
     return [
         'models', 'model', 'presets', 'preset', 'profiles', 'profile',
         'providers', 'provider', 'provider_models', 'provider-models', 'provider_model', 'provider-model',
-        'bridge_status', 'bridge-reload', 'bridge_reload',
+        'bridge_status', 'bridge-reload', 'bridge_reload', 'current', 'session', 'recent', 'stop',
     ].includes(command)
         || /^model_/.test(command)
         || /^preset_\d+$/.test(command)
         || /^profile_/.test(command)
-        || /^provider_/.test(command);
+        || /^provider_/.test(command)
+        || /^recent_\d+$/.test(command);
 }
 
 // 流式输出配置
@@ -1023,12 +1024,19 @@ async function handleTelegramCommand(command, args, chatId, userId = chatId) {
         const keyboard = {
             inline_keyboard: [
                 [
+                    { text: '📍 当前状态', callback_data: 'cmd_current' },
+                    { text: '🕘 最近聊天', callback_data: 'cmd_recent' }
+                ],
+                [
                     { text: '📋 角色列表', callback_data: 'cmd_listchars' },
                     { text: '💬 聊天记录', callback_data: 'cmd_listchats' }
                 ],
                 [
                     { text: '🆕 新建聊天', callback_data: 'cmd_new' },
                     { text: '📡 连接状态', callback_data: 'cmd_ping' }
+                ],
+                [
+                    { text: '⏹ 停止生成', callback_data: 'cmd_stop' }
                 ],
                 [
                     { text: '🔌 供应商切换', callback_data: 'cmd_providers' },
@@ -1061,6 +1069,9 @@ async function handleTelegramCommand(command, args, chatId, userId = chatId) {
         replyText = `📖 命令列表：\n\n`;
         replyText += `💬 聊天管理\n`;
         replyText += `/new - 开始新聊天\n`;
+        replyText += `/current - 当前角色/聊天/模型/预设状态\n`;
+        replyText += `/recent [数量] - 最近聊天快捷按钮\n`;
+        replyText += `/stop - 停止当前生成\n`;
         replyText += `/listchats [页码] - 聊天记录列表\n`;
         replyText += `/switchchat - 显示聊天记录切换按钮\n`;
         replyText += `/switchchat_<序号> - 切换聊天\n\n`;
@@ -1654,6 +1665,10 @@ bot.on('callback_query', async (callbackQuery) => {
             handleTelegramCommand('profile', [data.replace('cmd_profile_', '')], chatId, userId);
             return;
         }
+        if (data.startsWith('cmd_recent_')) {
+            handleTelegramCommand(data.replace('cmd_', ''), [], chatId, userId);
+            return;
+        }
         if (data.startsWith('cmd_switchchar_')) {
             handleTelegramCommand(data.replace('cmd_', ''), [], chatId, userId);
             return;
@@ -1765,6 +1780,10 @@ bot.on('callback_query', async (callbackQuery) => {
             case 'ping':
             case 'reload':
             case 'helptext':
+            case 'current':
+            case 'session':
+            case 'recent':
+            case 'stop':
             case 'models':
             case 'presets':
             case 'profiles':
