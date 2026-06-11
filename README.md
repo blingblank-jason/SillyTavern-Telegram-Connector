@@ -39,7 +39,7 @@ https://github.com/blingblank-jason/SillyTavern-Telegram-Connector
 如果你希望使用固定版本，可 checkout release tag，例如：
 
 ```text
-v0.2.0-openclaw
+v0.2.0-enhanced
 ```
 
 ### 2. 部署 Bridge Server
@@ -142,7 +142,7 @@ Bridge Server 支持通过 JSON 配置模型别名、预设、Provider/Profile �
 
 ## 版本
 
-当前维护版主要版本：`v0.2.0-openclaw`。
+当前维护版主要版本：`v0.2.0-enhanced`。
 
 详细变更见 [CHANGELOG.md](CHANGELOG.md)。
 

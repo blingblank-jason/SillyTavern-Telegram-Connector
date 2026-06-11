@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0-openclaw - 2026-06-11
+## v0.2.0-enhanced - 2026-06-11
 
 此版本是 `blingblank-jason/SillyTavern-Telegram-Connector` 增强维护版的首个整理版，基于上游 `justhil/SillyTavern-Telegram-Connector`。
 
