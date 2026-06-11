@@ -543,12 +543,42 @@ const bot = telegramDisabled ? {
     deleteMessage: async () => ({}),
     sendChatAction: async () => ({}),
     answerCallbackQuery: async () => ({}),
+    setMyCommands: async () => ({}),
     getUpdates: async () => [],
     startPolling: () => {},
     stopPolling: async () => {},
     on: () => {},
 } : new TelegramBot(token, { polling: false });
 logWithTimestamp('log', telegramDisabled ? 'Telegram Bot 已禁用（测试模式）' : '正在初始化Telegram Bot...');
+
+const TELEGRAM_BOT_COMMANDS = [
+    { command: 'help', description: '打开 Bridge 快捷菜单' },
+    { command: 'current', description: '当前角色/聊天/模型/预设状态' },
+    { command: 'recent', description: '最近聊天快捷按钮' },
+    { command: 'stop', description: '停止当前生成' },
+    { command: 'new', description: '开始新聊天' },
+    { command: 'listchars', description: '角色列表' },
+    { command: 'listchats', description: '当前角色聊天记录' },
+    { command: 'models', description: '模型列表' },
+    { command: 'presets', description: '预设列表' },
+    { command: 'profiles', description: 'Profile 模式档案' },
+    { command: 'providers', description: 'Provider 连接档案' },
+    { command: 'provider_models', description: '当前 Provider 源模型' },
+    { command: 'bridge_status', description: 'Bridge 配置与连接状态' },
+    { command: 'bridge_reload', description: '重载 Bridge 配置' },
+    { command: 'upload', description: '上传导入角色卡/预设' },
+    { command: 'ping', description: '连接状态' },
+    { command: 'reload', description: '重载服务' },
+];
+
+async function syncTelegramCommandMenu() {
+    try {
+        await bot.setMyCommands(TELEGRAM_BOT_COMMANDS);
+        logWithTimestamp('log', `Telegram Bot命令菜单已同步，共 ${TELEGRAM_BOT_COMMANDS.length} 条`);
+    } catch (error) {
+        logWithTimestamp('error', '同步Telegram Bot命令菜单失败:', error.message || error);
+    }
+}
 
 // 手动清除所有未处理的消息，然后启动轮询
 if (!telegramDisabled) {
@@ -594,6 +624,8 @@ if (!telegramDisabled) {
             }
         }
 
+        await syncTelegramCommandMenu();
+
         // 启动轮询
         bot.startPolling({
             restart: true,
@@ -602,7 +634,8 @@ if (!telegramDisabled) {
         logWithTimestamp('log', 'Telegram Bot轮询已启动');
     } catch (error) {
         logWithTimestamp('error', '清除消息队列或启动轮询时出错:', error);
-        // 如果清除失败，仍然尝试启动轮询
+        // 如果清除失败，仍然尝试同步菜单并启动轮询
+        await syncTelegramCommandMenu();
         bot.startPolling({ restart: true, clean: true });
         logWithTimestamp('log', 'Telegram Bot轮询已启动（清除队列失败后）');
     }
@@ -1018,7 +1051,7 @@ async function handleTelegramCommand(command, args, chatId, userId = chatId) {
     let replyText = `未知命令: /${command}。 使用 /help 查看所有命令。`;
 
     // 特殊处理help命令，显示带按钮的菜单
-    if (command === 'help') {
+    if (command === 'help' || command === 'start') {
         replyText = `🤖 SillyTavern Telegram Bridge\n\n点击下方按钮快速操作，或使用命令：`;
 
         const keyboard = {
